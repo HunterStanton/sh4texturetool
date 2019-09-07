@@ -163,7 +163,8 @@ namespace sh4texturetool
                 for (int i = 0; i < textureCount; i++)
                 {
 
-                    BinaryWriter imageWriter = new BinaryWriter(new FileStream(i+".dds", FileMode.Create));
+                    Directory.CreateDirectory(args[2]);
+                    BinaryWriter imageWriter = new BinaryWriter(new FileStream(args[2] + "/" + i + ".dds", FileMode.Create));
 
                     // Read the pointer to the current texture
                     int texturePointer = reader.ReadInt32();
@@ -201,6 +202,8 @@ namespace sh4texturetool
 
                     Console.WriteLine("Image type: " + new string(imageType));
 
+                    
+
                     // Seems to be the texture + number of mipmaps
                     int numTextures = reader.ReadInt32();
                     
@@ -214,6 +217,12 @@ namespace sh4texturetool
                     reader.ReadBytes(0x1c);
 
                     int imageDataPointer = reader.ReadInt32() + Convert.ToInt32(texOffset);
+
+                    // Hack to support non-mipmapped images
+                    // TODO: Get rid of this at some point
+                    long mainPointerLocation = reader.BaseStream.Position;
+
+
                     int mipMap1Pointer = reader.ReadInt32() + Convert.ToInt32(texOffset);
                     int mipMap2Pointer = reader.ReadInt32() + Convert.ToInt32(texOffset);
                     int mipMap3Pointer = reader.ReadInt32() + Convert.ToInt32(texOffset);
@@ -225,13 +234,53 @@ namespace sh4texturetool
 
                     int unknown = reader.ReadInt32();
 
-                    var imageData = new byte[mipMap1Pointer - imageDataPointer];
+                    var imageData = new byte[0];
 
-                    // Every image's pointer needs to be incremented by a value of 0x70 * imageIndex for whatever reason
-                    reader.BaseStream.Position = imageDataPointer + (0x70 * i);
 
-                    // Get the image data
-                    imageData = reader.ReadBytes(mipMap1Pointer - imageDataPointer);
+                    // If there is one texture, this is a non-mipmapped image
+                    // Common examples of these are loading screen images, UI elements, Henry, and his weapons
+                    if (numTextures == 1)
+                    {
+                        // If we're not at the end of the chunk
+                        if (i != textureCount -1)
+                        {
+                            // Read until the next texture pointer
+                            reader.ReadBytes(0x50);
+
+                            int nextPointer = reader.ReadInt32();
+
+                            imageData = new byte[nextPointer - imageDataPointer];
+
+                            // Every image's pointer needs to be incremented by a value of 0x70 * imageIndex for whatever reason
+                            reader.BaseStream.Position = imageDataPointer + (0x70 * i);
+
+                            // Get the image data
+                            imageData = reader.ReadBytes(nextPointer - imageDataPointer);
+                        }
+                        else
+                        {
+                            imageData = new byte[reader.BaseStream.Length - imageDataPointer];
+
+                            // Every image's pointer needs to be incremented by a value of 0x70 * imageIndex for whatever reason
+                            reader.BaseStream.Position = imageDataPointer + (0x70 * i);
+
+                            // Get the image data
+                            imageData = reader.ReadBytes(Convert.ToInt32(reader.BaseStream.Length - imageDataPointer));
+                        }
+                    }
+                    else
+                    {
+                        // Every image's pointer needs to be incremented by a value of 0x70 * imageIndex for whatever reason
+                        reader.BaseStream.Position = imageDataPointer + (0x70 * i);
+
+                        imageData = reader.ReadBytes(Convert.ToInt32(mipMap1Pointer - imageDataPointer));
+                    }
+
+
+                    // DDS Writing
+                    // A lot of this shit is hardcoded and very likely wrong such as the flags. The only things that are 100% certain are the pitch, reserved, and height/width.
+                    // Everything else is hardcoded af, but every texture I've tried seems to dump fine, so it "just works"
+                    // Structure ripped from https://docs.microsoft.com/en-us/windows/win32/direct3ddds/dds-header
 
                     // Write DDS header
                     imageWriter.Write(0x20534444);
@@ -258,12 +307,27 @@ namespace sh4texturetool
                     // DDS pixel format size (always 32)
                     imageWriter.Write(0x20);
 
-                    // PF Flag
-                    imageWriter.Write(0x4);
+    
 
-                    imageWriter.Write(imageType);
+                    if (imageType[0] != 21)
+                    {
+                        // PF Flag
+                        imageWriter.Write(0x4);
+                        imageWriter.Write(imageType);
+                        imageWriter.Write(new byte[0x14]);
+                    }
+                    else
+                    {
+                        // PF Flag
+                        imageWriter.Write(0x41);
+                        imageWriter.Write(0x00);
+                        imageWriter.Write(0x20);
+                        imageWriter.Write(0xFF0000);
+                        imageWriter.Write(0x00FF00);
+                        imageWriter.Write(0x0000FF);
+                        imageWriter.Write(0xFF000000);
+                    }
 
-                    imageWriter.Write(new byte[0x14]);
 
                     // Caps
                     imageWriter.Write(0x1000);
@@ -280,7 +344,7 @@ namespace sh4texturetool
                     imageWriter.Close();
                 }
 
-                Console.WriteLine("Texture chunk analyzed successfully!");
+                Console.WriteLine("Textures extracted from chunk!");
 
             }
 
@@ -289,49 +353,160 @@ namespace sh4texturetool
                 // Create a new file
                 FileStream file = new FileStream(args[2], FileMode.Create);
 
-                // Create a binary writer that will write the new bin file
+                // Create a binary writer that will write the new texture chunk
                 BinaryWriter writer = new BinaryWriter(file);
 
-                // Get the files inside the output directory
+                // Get the DDS textures inside the output directory
                 string[] files = Directory.GetFiles(args[1]);
 
-                // Grab the number of files inside the user's output directory
-                int fileCount = files.Length;
+                var sortedFiles = files.CustomSort().ToList();
 
-                Console.WriteLine("Number of files in new .bin: " + fileCount);
+                // Grab the number of textures inside the user's output directory
+                short fileCount = Convert.ToInt16(files.Length);
 
-                List<byte> binBody = new List<byte>();
+                Console.WriteLine("Number of files in new texture chunk: " + fileCount);
 
+                // Textures + palette count
+                writer.Write(fileCount);
                 writer.Write(fileCount);
 
-                // Leave enough space for 1024 files
-                // TODO: Figure out why the game crashes when using any repacked bin file
-                int tempLength = 0x300;
+                List<Texture.PaletteInfo> paletteInfos = new List<Texture.PaletteInfo>( fileCount);
+                List<Texture.TextureHeader> textureHeaders = new List<Texture.TextureHeader>(fileCount);
+                List<Texture.TextureInfo> textureInfos = new List<Texture.TextureInfo>(fileCount);
+                List<Texture.Texture> texturePixels = new List<Texture.Texture>(fileCount);
+
+                int previousImageSizes = 0;
 
                 // Loop through every bin chunk in the output directory and build a bin file from it
-                foreach (string inputFile in files)
+                for(var i = 0;i < sortedFiles.Count;i++)
                 {
-                    // Write the file's offset into the new header
-                    long length = new System.IO.FileInfo(inputFile).Length;
 
-                    if (inputFile != files.First())
-                    {
-                        tempLength = Convert.ToInt32(length + tempLength);
-                    }
+                    Texture.TextureHeader header = new Texture.TextureHeader();
 
-                    // Write the offset of the file to the bin header
-                    writer.Write(tempLength);
+                    Texture.Texture pixels = new Texture.Texture();
 
-                    // Append the current bin chunk to the bin body
-                    binBody.AddRange(File.ReadAllBytes(inputFile));
+                    Texture.TextureInfo info = new Texture.TextureInfo();
 
+                    textureHeaders.Add(header);
+                    textureInfos.Add(info);
+                    texturePixels.Add(pixels);
+
+                    // Create a new binary reader so we can read the information stored in the DDS file
+                    BinaryReader reader = new BinaryReader(new FileStream(sortedFiles[i], FileMode.Open));
+
+                    reader.BaseStream.Position = 0xc;
+
+                    int height = reader.ReadInt32();
+                    int width = reader.ReadInt32();
+                    int pitch = reader.ReadInt32();
+
+                    reader.BaseStream.Position = 0x54;
+
+                    char[] imageType = reader.ReadChars(4);
+
+                    // Get the pixels
+                    reader.BaseStream.Position = 0x80;
+
+                    byte[] imagePixels = reader.ReadBytes(Convert.ToInt32(reader.BaseStream.Length - reader.BaseStream.Position));
+
+                    // Fill out the texture objects to the best of our ability
+
+                    info.height = height;
+                    info.width = width;
+
+                    header.height = height;
+                    header.width = width;
+                    header.pitch = pitch;
+                    header.imageType = imageType;
+
+                    pixels.pixelData = imagePixels.ToList();
+
+                    // Maths to calculate where the data will be
+                    // PLEASE SAVE ME FROM THESE EQUATIONS!!!
+                    header.textureOffset = ((0x70 * (fileCount)) + (i * 0x70)) + previousImageSizes;
+
+                    previousImageSizes = imagePixels.Length + previousImageSizes;
+
+
+                    // Close the reader, it's useless now
+                    reader.Close();
                 }
 
-                // Append extra bytes to pad the bin header to 0x2000
-                writer.Write(new byte[0x300 - writer.BaseStream.Length]);
+                writer.Write(new byte[0xC]);
 
-                // Write the bin body to the bin file
-                writer.Write(binBody.ToArray());
+                // More maths to calculate texture/palette pointers before they've even been written
+                // TODO: Fix this ugly hack
+                for (var i = 0; i < fileCount * 2; i++)
+                {
+                    writer.Write(((0x4 * (fileCount * 2)) + (i * 0x10)) + 0x10);
+                }
+
+                // Write texture infos
+                for (var i = 0; i < fileCount; i++)
+                {
+                    writer.Write(textureInfos[i].height);
+                    writer.Write(textureInfos[i].width);
+                    writer.Write(new byte[0x8]);
+                }
+
+                // Write palettes
+                for (var i = 0; i < fileCount; i++)
+                {
+                    writer.Write(new byte[0xC]);
+
+                    // Palette points to...itself for some odd reason + 0x60
+                    writer.Write(((0x10 * fileCount) + (0x10 * i)) + (0x50 * i));
+                } 
+
+                // Write texture headers
+                for (var i = 0; i < fileCount; i++)
+                {
+                    writer.Write(new byte[0x20]);
+                    writer.Write(textureHeaders[i].width);
+                    writer.Write(textureHeaders[i].height);
+                    if (textureHeaders[i].imageType[0] == 00)
+                    {
+                        writer.Write(0x15);
+
+                        // Skip mipmaps for now, game will work without them anyway as Henry has no mipmaps because he's never far from the camera
+                        writer.Write(0x1);
+
+                        writer.Write((textureHeaders[i].height * textureHeaders[i].width) * 4);
+                    }
+                    else
+                    {
+                        writer.Write(Encoding.UTF8.GetBytes(textureHeaders[i].imageType));
+
+                        // Skip mipmaps for now, game will work without them anyway as Henry has no mipmaps because he's never far from the camera
+                        writer.Write(0x1);
+
+                        writer.Write(textureHeaders[i].pitch);
+                    }
+
+                    // Write the unknowns
+                    writer.Write(new byte[0x1c]);
+
+                    if (i == 0)
+                    {
+                        writer.Write(textureHeaders[i].textureOffset + 0x8);
+                    }
+                    else
+                    {
+                        writer.Write((textureHeaders[i].textureOffset + 0x8) - (0x80 * i));
+                    }
+
+                    writer.Write(new byte[0x1c]);
+                }
+
+                for(var i=0;i< fileCount;i++)
+                {
+                    if(i == 0)
+                    {
+                        writer.Write(new byte[0x8]);
+                    }
+                    writer.Write(texturePixels[i].pixelData.ToArray());
+                    writer.Write(new byte[0x60]);
+                }
 
                 // Close the binary writer and file
                 writer.Close();
