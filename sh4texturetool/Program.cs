@@ -247,19 +247,17 @@ namespace sh4texturetool
                             // Read until the next texture pointer
                             reader.ReadBytes(0x50);
 
-                            int nextPointer = reader.ReadInt32();
-
-                            imageData = new byte[nextPointer - imageDataPointer];
+                            imageData = new byte[(height2 * width2) * 4];
 
                             // Every image's pointer needs to be incremented by a value of 0x70 * imageIndex for whatever reason
                             reader.BaseStream.Position = imageDataPointer + (0x70 * i);
 
                             // Get the image data
-                            imageData = reader.ReadBytes(nextPointer - imageDataPointer);
+                            imageData = reader.ReadBytes(imageData.Length);
                         }
                         else
                         {
-                            imageData = new byte[reader.BaseStream.Length - imageDataPointer];
+                            imageData = new byte[(height2 * width2) * 4];
 
                             // Every image's pointer needs to be incremented by a value of 0x70 * imageIndex for whatever reason
                             reader.BaseStream.Position = imageDataPointer + (0x70 * i);
@@ -444,8 +442,9 @@ namespace sh4texturetool
                 // Write texture infos
                 for (var i = 0; i < fileCount; i++)
                 {
-                    writer.Write(textureInfos[i].height);
+                    // SH4 stores size as w x h instead of h x w that DDS files store
                     writer.Write(textureInfos[i].width);
+                    writer.Write(textureInfos[i].height);
                     writer.Write(new byte[0x8]);
                 }
 
@@ -468,7 +467,7 @@ namespace sh4texturetool
                     {
                         writer.Write(0x15);
 
-                        // Skip mipmaps for now, game will work without them anyway as Henry has no mipmaps because he's never far from the camera
+                        // 
                         writer.Write(0x1);
 
                         writer.Write((textureHeaders[i].height * textureHeaders[i].width) * 4);
@@ -477,22 +476,22 @@ namespace sh4texturetool
                     {
                         writer.Write(Encoding.UTF8.GetBytes(textureHeaders[i].imageType));
 
-                        // Skip mipmaps for now, game will work without them anyway as Henry has no mipmaps because he's never far from the camera
+                        // Skip mipmaps for now, game will work without them anyway as all A8R8G8B8 textures don't have mipmaps either
                         writer.Write(0x1);
 
-                        writer.Write(textureHeaders[i].pitch);
+                        writer.Write((textureHeaders[i].pitch));
                     }
 
                     // Write the unknowns
                     writer.Write(new byte[0x1c]);
 
-                    if (i == 0)
+                    if (fileCount % 2 == 1)
                     {
-                        writer.Write(textureHeaders[i].textureOffset + 0x8);
+                        writer.Write((textureHeaders[i].textureOffset + 0x8) - ((0x80 * i)));
                     }
                     else
                     {
-                        writer.Write((textureHeaders[i].textureOffset + 0x8) - (0x80 * i));
+                        writer.Write((textureHeaders[i].textureOffset) - ((0x80 * i)));
                     }
 
                     writer.Write(new byte[0x1c]);
@@ -500,7 +499,8 @@ namespace sh4texturetool
 
                 for(var i=0;i< fileCount;i++)
                 {
-                    if(i == 0)
+                    // If the file count is even
+                    if(fileCount%2 == 1 && i == 0)
                     {
                         writer.Write(new byte[0x8]);
                     }
