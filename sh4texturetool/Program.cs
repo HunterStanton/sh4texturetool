@@ -487,7 +487,14 @@ namespace sh4texturetool
 
                     if (fileCount % 2 == 1)
                     {
-                        writer.Write((textureHeaders[i].textureOffset + 0x8) - ((0x80 * i)));
+                        if (fileCount == 1)
+                        {
+                            writer.Write((textureHeaders[i].textureOffset) - ((0x80 * i)) + 0x58);
+                        }
+                        else
+                        {
+                            writer.Write((textureHeaders[i].textureOffset + 0x8) - ((0x80 * i)));
+                        }
                     }
                     else
                     {
@@ -499,13 +506,27 @@ namespace sh4texturetool
 
                 for(var i=0;i< fileCount;i++)
                 {
-                    // If the file count is even
-                    if(fileCount%2 == 1 && i == 0)
+                    if (fileCount == 1)
                     {
-                        writer.Write(new byte[0x8]);
+                        writer.Write(new byte[0x58]);
+                        writer.Write(texturePixels[i].pixelData.ToArray());
+                        writer.Write(new byte[0x60]);
                     }
-                    writer.Write(texturePixels[i].pixelData.ToArray());
-                    writer.Write(new byte[0x60]);
+                    else
+                    {
+                        // If the file count is even
+                        if (fileCount % 2 == 1 && i == 0)
+                        {
+                            writer.Write(new byte[0x8]);
+                            writer.Write(texturePixels[i].pixelData.ToArray());
+                            writer.Write(new byte[0x60]);
+                        }
+                        else
+                        {
+                            writer.Write(texturePixels[i].pixelData.ToArray());
+                            writer.Write(new byte[0x60]);
+                        }
+                    }
                 }
 
                 // Close the binary writer and file
